@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "CYD-LVGL",
+			"path": "CYD-LVGL"
+		}
+	],
+	"settings": {}
+}
