@@ -30,7 +30,7 @@ Code from @AllanOricil helped a lot: https://github.com/AllanOricil/esp32-lvgl-l
 
 
 ## Software and Libraries Used
-LVGL: An open-source graphics library for creating embedded GUIs.
-TFT_eSPI: A graphics library for ESP8266 and ESP32 that supports different TFT displays.
-XPT2046_Bitbang: A library for interfacing with XPT2046 resistive touch controllers using bit-banging for SPI communication.
-PlatformIO: Development platforms used for writing, compiling, and uploading the code to ESP32.
+LVGL: An open-source graphics library for creating embedded GUIs.  
+TFT_eSPI: A graphics library for ESP8266 and ESP32 that supports different TFT displays.  
+XPT2046_Bitbang: A library for interfacing with XPT2046 resistive touch controllers using bit-banging for SPI communication.  
+PlatformIO: Development platforms used for writing, compiling, and uploading the code to ESP32.  
