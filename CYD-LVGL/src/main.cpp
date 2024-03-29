@@ -7,6 +7,13 @@
 #include "XPT2046_Bitbang.h"
 #include <Arduino.h>
 
+// CYD-ESP32-LVGL-touch-example
+// ESP32 LVGL v8, TFT_eSPI, SD Card, Touchscreen, Light Sensor, LEDs, Speaker example
+// cheap yellow display, 240x320, with ILI9341, ST7789, or similar
+// Cheap Yellow Display (CYD) 2432S028 tested with both ILI9341 and ST7789
+// https://github.com/ddxfish/CYD-ESP32-LVGL-touch-example
+// ddxfish
+
 //TF Card
 #define SD_CS 5 // Adjust to your SD card CS pin
 
@@ -17,10 +24,9 @@ TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t buf[LV_HOR_RES_MAX * 10]; // /* Declare a buffer for 10 lines */
 static lv_disp_drv_t disp_drv;  // Display driver
-static lv_obj_t* circle = nullptr; //Circle object here so we dont stack overflow
 static lv_obj_t *atextlabel = nullptr;
 
-//Our globals. dont use global variables like this. stop it, get some help.
+//Our globals. dont use these here. stop it, get some help.
 int counter = 0;
 String printthis = "";
 
@@ -31,10 +37,10 @@ String printthis = "";
 #define CS_PIN   33
 #define RERUN_CALIBRATE false //turn this on and watch serial at boot if you get touch errors
 XPT2046_Bitbang touchscreen(MOSI_PIN, MISO_PIN, CLK_PIN, CS_PIN);
-void calibrateTouchscreen();
+void calibrateTouchscreen(); //prorotype
 
-// led and light sensor
-#define LDR_PIN 34 // Photoresistor on GPIO34
+// light sensor
+#define LDR_PIN 34 // Photoresistor in voltage divider on GPIO34
 #define LIGHT_SENSOR_RESOLUTION 12 
 
 // LED pins
@@ -45,6 +51,7 @@ void calibrateTouchscreen();
 #define RED_CHANNEL 0
 #define GREEN_CHANNEL 1
 #define BLUE_CHANNEL 2
+#define MAX_PWM 255 // Maximum PWM value for 8-bit resolution
 
 
 // LVGL
@@ -52,12 +59,12 @@ static void cyd_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_co
 static void cyd_touchpad_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data);
 #define LVGL_TICK_PERIOD_MS 1
 
-
+// Speaker
 #define SPEAKER_PIN 26  // ESP32's pin 26 corresponds to GPIO26 on ESP32 DevKitC V4 board 
-#define FREQUENCY 200  // Low frequency (less than 30kHz) 
+#define FREQUENCY 200  // Low frequency  
 #define RESOLUTION 8    // 8-bit resolution (0-255) 
-#define DUTY_CYCLE 1  // low duty cycle
-#define BEEP_DURATION 100  // 250ms beep duration 
+#define DUTY_CYCLE 1  // low duty cycle (volume)
+#define BEEP_DURATION 100  // beep duration in ms
 #define BEEP_COUNT 3  // 3 beeps 
 
 // Flush display - this is the link between LVGL and TFT_eSPI for LVGL v8
@@ -73,6 +80,7 @@ static void cyd_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_co
 }
 
 // Read touchpad - this is the link between LVGL and the XPT2046 driver for LVGL v8
+// Thanks https://github.com/AllanOricil/esp32-lvgl-lcd-touch-sd-card 
 static void cyd_touchpad_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
     Point touchPoint = touchscreen.getTouch(); // Poll the touch controller
     int16_t tmp_x = touchPoint.x;
@@ -187,13 +195,13 @@ void createNewSDCardFile(const char* path){
 }
 
 void writeToSDCardFile(String data){
-    Serial.println("Written 'Hello, hi from SD card!' to /hello.txt");
+    Serial.println("Writing to file: " + data);
     File file = SD.open("/hello.txt", FILE_WRITE);
     if(!file) {
         Serial.println("Failed to open file for writing");
         return;
     }
-    file.println("Hello, fellow CYD user!");
+    file.println(data);
     file.close();
 }
 
@@ -224,35 +232,66 @@ void pushTextToScreen(String text) {
     Serial.println("Displayed text on screen.");
 }
 
+void updateBarValue(int value) {  //this is overkill
+    static lv_obj_t *bar = NULL;
+    static lv_style_t style_indic; // Style for the indicator
+
+    if (bar == NULL) {
+        bar = lv_bar_create(lv_scr_act());
+        lv_style_init(&style_indic);
+
+        // Set initial properties for the style
+        lv_style_set_bg_opa(&style_indic, LV_OPA_COVER); // Ensure opacity is set for the color to show
+        lv_obj_add_style(bar, &style_indic, LV_PART_INDICATOR);
+        lv_bar_set_range(bar, 0, 100);
+        lv_obj_set_size(bar, 20, 240); // Bar height set to 240px
+        lv_obj_align(bar, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
+    // Calculate the color based on the value, transitioning from red to blue
+    uint8_t red = (uint8_t)(255 - 2.55 * value);
+    uint8_t blue = (uint8_t)(2.55 * value);
+    lv_color_t color = lv_color_make(red, 0, blue);
+    lv_style_set_bg_color(&style_indic, color); // update the style for the indicator
+
+    lv_obj_refresh_style(bar, LV_PART_INDICATOR, LV_STYLE_PROP_ANY); 
+    lv_bar_set_value(bar, value, LV_ANIM_ON);
+}
+
 int readLightLevel() {
-    int lightLevel = analogRead(LDR_PIN);  // Read value from LIGHT_SENSOR_PIN 
+    //0 is bright, 600 is dark
+    int lightLevel = analogRead(LDR_PIN);  // Read value from LIGHT_SENSOR_PIN
+    //invert and adjust the light level to a 0-100 scale 
+    lightLevel = min(lightLevel, 600);
+    lightLevel = (600 - lightLevel) * 100 / 600;
     Serial.println("Light level: " + String(lightLevel));  // Print light level
+    updateBarValue(lightLevel);  // Update the bar value
     return lightLevel;  // Return light level 
 }
 
-#define MAX_PWM 255 // Maximum PWM value for 8-bit resolution
 void toggleLEDs() {
-    if (ledcRead(RED_CHANNEL) > 0) { // toggle the LED
-        ledcWrite(RED_CHANNEL, 0); // Turn off the LED
+    static bool ledsAreOn = false; // Static variable to keep track of the LED state
+
+    if (ledsAreOn) {
+        // Turn off all LEDs (for common-anode, "off" means writing MAX_PWM)
+        ledcWrite(RED_CHANNEL, MAX_PWM); 
+        ledcWrite(GREEN_CHANNEL, MAX_PWM); 
+        ledcWrite(BLUE_CHANNEL, MAX_PWM); 
+        ledsAreOn = false;
     } else {
-        ledcWrite(RED_CHANNEL, MAX_PWM); // Turn on the LED
-    }
-    if (ledcRead(GREEN_CHANNEL) > 0) {
-        ledcWrite(GREEN_CHANNEL, 0); // Turn off the LED
-    } else {
-        ledcWrite(GREEN_CHANNEL, MAX_PWM); // Turn on the LED
-    }
-    if (ledcRead(BLUE_CHANNEL) > 0) {
-        ledcWrite(BLUE_CHANNEL, 0); // Turn off the LED
-    } else {
-        ledcWrite(BLUE_CHANNEL, MAX_PWM); // Turn on the LED
+        // To turn on an LED (for common-anode), write 0
+        int ledToTurnOn = random(3); // Generate a random number between 0 and 2
+        ledcWrite(RED_CHANNEL, ledToTurnOn == 0 ? 0 : MAX_PWM);
+        ledcWrite(GREEN_CHANNEL, ledToTurnOn == 1 ? 0 : MAX_PWM);
+        ledcWrite(BLUE_CHANNEL, ledToTurnOn == 2 ? 0 : MAX_PWM);
+        ledsAreOn = true;
     }
 }
+
+//led functions
 static void button_event_cb(lv_event_t * e) {
     lv_event_code_t code = lv_event_get_code(e);
     if(code == LV_EVENT_CLICKED) {
-        Serial.println("Button clicked!");
-        // Call any function here
+        Serial.println("LED Button clicked!");
         toggleLEDs(); // Set the LED color to green (50% brightness
     }
 }
@@ -266,13 +305,14 @@ void create_button(String buttontext) { //LED button
     lv_obj_add_event_cb(btn, button_event_cb, LV_EVENT_CLICKED, NULL); // Assign the event callback
 }
 
+//speaker functions
 void buzzSpeaker() {
     // Beep 3 times 
     for(int i = 0; i < BEEP_COUNT; i++) {  // Loop 3 times 
-        ledcWrite(4, DUTY_CYCLE);  // Turn on speaker 
-        delay(BEEP_DURATION);  // Wait 250ms
+        ledcWrite(4, DUTY_CYCLE);  // Turn on speaker with 1% duty cycle
+        delay(BEEP_DURATION);  // Wait 
         ledcWrite(4, 0);  // Turn off speaker 
-        delay(BEEP_DURATION);  // Wait 250ms 
+        delay(BEEP_DURATION);  // Wait 
     } 
 }
 static void button_event_cb2(lv_event_t * e) {
@@ -286,6 +326,14 @@ void create_button2(String buttontext) { //Buzzer button
     lv_obj_t * btn = lv_btn_create(lv_scr_act()); // Create a button on the active screen
     lv_obj_set_size(btn, 200, 80); // Set the button's size
     lv_obj_set_align(btn, LV_ALIGN_BOTTOM_MID);
+
+    // Create a style
+    static lv_style_t style_btn;
+    lv_style_init(&style_btn);
+    lv_style_set_bg_color(&style_btn, lv_color_hex(0xFF0000)); // Set background color to red
+    lv_style_set_bg_opa(&style_btn, LV_OPA_COVER); // Set opacity to fully opaque
+    lv_obj_add_style(btn, &style_btn, LV_PART_MAIN);
+
     lv_obj_t * label = lv_label_create(btn); // Add a label to the button
     lv_label_set_text(label, buttontext.c_str()); // Set the label text
     lv_obj_center(label); // Center the label on the button
@@ -313,10 +361,8 @@ void setup() {
 
     // Speaker
     pinMode(SPEAKER_PIN, OUTPUT);  // Set SPEAKER_PIN as output 
-    // Configure PWM settings 
-    ledcSetup(4, FREQUENCY, RESOLUTION);  // Setup PWM channel 0 
-    // Attach SPEAKER_PIN to PWM channel 0 
-    ledcAttachPin(SPEAKER_PIN, 4);  
+    ledcSetup(4, FREQUENCY, RESOLUTION);  // Setup PWM channel 4 
+    ledcAttachPin(SPEAKER_PIN, 4);  // Attach SPEAKER_PIN to PWM channel 4 
 
     //LDR light sensor
     pinMode(LDR_PIN, INPUT);
@@ -331,34 +377,36 @@ void setup() {
     Serial.println("TFT init and rotation.");
     tft.begin(); /* TFT init */
     tft.setRotation(1); //You may need to adjust this for your display
-    tft.invertDisplay(0); //I had to invert colors: st7789 is 0, ili9341 is 1
-    //Test TFT_eSPI with RED circle so you know it's working
+    tft.invertDisplay(INVERT_DISPLAY == 1); //pulls from platformio.ini build deps, 0 for ST7789, 1 for ILI9341
+    //Test TFT_eSPI with RED circle so you know the display driver is working
     tft.fillScreen(TFT_BLACK); // Clear the screen to black
     Serial.println("Drawing a red circle using TFT_eSPI only.");
-    tft.drawCircle(120, 160, 50, TFT_RED); // Parameters: x, y, radius, color
+    tft.drawCircle(120, 160, 50, TFT_RED); // x, y, radius, color
     delay(2000);
 
     //Config LVGL
     Serial.println("Configuring LVGL...");
     configureLVGL();
 
-    //SDCard
-    Serial.println("SD card initization.");
-    SDCardInit();
-    // Remove existing file if any
-    Serial.println("Removing existing file /hello.txt if any.");
-    removeSDCardFile("/hello.txt");
-    createNewSDCardFile("/hello.txt");
-    writeToSDCardFile("Hello, fellow CYD user, your SD works!");
-    printthis = readLineFromSDCardFile("/hello.txt"); // Read from the file
-    Serial.println("Line read from file: " + printthis);
-
+    if (USE_TF_CARD == 1){
+        //SDCard
+        Serial.println("SD card initization.");
+        SDCardInit();
+        // Remove existing file if any
+        Serial.println("Removing existing file /hello.txt if any.");
+        removeSDCardFile("/hello.txt");
+        createNewSDCardFile("/hello.txt");
+        writeToSDCardFile("Hello, fellow CYD user, your SD works!");
+        printthis = readLineFromSDCardFile("/hello.txt"); // Read from the file
+        Serial.println("Line read from file: " + printthis);
+    }
+    
     // Push some text to the screen as a test
     Serial.println("Pushing text to screen.");
 
     //if printthis is empty, push a default message
     if (printthis == "") {
-        pushTextToScreen("Hello, fellow CYD user! SD didn't work :(");
+        pushTextToScreen("Hello, fellow CYD user! No SD");
     } else {
         pushTextToScreen(printthis);
     }
@@ -373,7 +421,7 @@ void loop() {
 
     Serial.println("Looping..." + String(counter));
     
-    //this wasn't working for me on multiple devices
+    //this prints the light level bar, colorized from red to blue based on light level
     int lightLevel = readLightLevel(); //light sensor on pin 34
 
     //LVGL needs to be updated in the loop
