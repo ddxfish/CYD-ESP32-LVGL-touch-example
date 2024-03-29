@@ -5,12 +5,13 @@
 #include <SD.h>
 #include "SPI.h"
 #include "XPT2046_Bitbang.h"
+#include <Arduino.h>
 
 //TF Card
 #define SD_CS 5 // Adjust to your SD card CS pin
 
 //TFT_eSPI used as LVGL display driver
-TFT_eSPI tft = TFT_eSPI(); /* TFT instance */
+TFT_eSPI tft = TFT_eSPI();
 
 //LVGL (not all of this has to be global, but it's easier for now)
 static lv_disp_draw_buf_t draw_buf;
@@ -28,14 +29,15 @@ String printthis = "";
 #define MISO_PIN 39
 #define CLK_PIN  25
 #define CS_PIN   33
-#define RERUN_CALIBRATE false
+#define RERUN_CALIBRATE false //turn this on and watch serial at boot if you get touch errors
 XPT2046_Bitbang touchscreen(MOSI_PIN, MISO_PIN, CLK_PIN, CS_PIN);
+void calibrateTouchscreen();
 
 // led and light sensor
 #define LDR_PIN 34 // Photoresistor on GPIO34
-#include <driver/adc.h>
+#define LIGHT_SENSOR_RESOLUTION 12 
 
-
+// LED pins
 #define RED_LED_PIN 4
 #define GREEN_LED_PIN 16
 #define BLUE_LED_PIN 17
@@ -44,15 +46,22 @@ XPT2046_Bitbang touchscreen(MOSI_PIN, MISO_PIN, CLK_PIN, CS_PIN);
 #define GREEN_CHANNEL 1
 #define BLUE_CHANNEL 2
 
+
+// LVGL
 static void cyd_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p);
 static void cyd_touchpad_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data);
 #define LVGL_TICK_PERIOD_MS 1
 
 
+#define SPEAKER_PIN 26  // ESP32's pin 26 corresponds to GPIO26 on ESP32 DevKitC V4 board 
+#define FREQUENCY 200  // Low frequency (less than 30kHz) 
+#define RESOLUTION 8    // 8-bit resolution (0-255) 
+#define DUTY_CYCLE 1  // low duty cycle
+#define BEEP_DURATION 100  // 250ms beep duration 
+#define BEEP_COUNT 3  // 3 beeps 
 
 // Flush display - this is the link between LVGL and TFT_eSPI for LVGL v8
 static void cyd_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p) {
-    //Serial.println("Flushing display...");
     uint32_t w = (area->x2 - area->x1 + 1); //calculate width and height of the area to be flushed
     uint32_t h = (area->y2 - area->y1 + 1);
     tft.startWrite();
@@ -63,19 +72,18 @@ static void cyd_disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_co
     Serial.println("Display flushed.");
 }
 
+// Read touchpad - this is the link between LVGL and the XPT2046 driver for LVGL v8
 static void cyd_touchpad_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
-    
     Point touchPoint = touchscreen.getTouch(); // Poll the touch controller
     int16_t tmp_x = touchPoint.x;
     int16_t tmp_y = touchPoint.y;
-    touchPoint.x = tmp_y;  // Replace 240 with your y display width
-    touchPoint.y = tmp_x;   //240 + 80 = 320, but I did this manually.
+    touchPoint.x = tmp_y;  // this x y was swapped for my display
+    touchPoint.y = tmp_x;   //x y swapped, okay whatever
     Serial.println("Touchscreen location: " + String(touchPoint.x) + ", " + String(touchPoint.y));
-
     if (touchPoint.x > 0 && touchPoint.x < 240 && touchPoint.y > 0 && touchPoint.y < 320) {  
         // if the touch cnoordinates are within the display's coordinates
-        data->state = LV_INDEV_STATE_PR; 
-        data->point.x = touchPoint.x;
+        data->state = LV_INDEV_STATE_PR; //update LVGL state to pressed
+        data->point.x = touchPoint.x; //update LVGL point to the touch coordinates
         data->point.y = touchPoint.y;
         Serial.println("Valid touch point");
     } else {
@@ -86,11 +94,11 @@ static void cyd_touchpad_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * d
 }
 
 void initTouchscreen(){
-    // Initialize the touchscreen
     touchscreen.begin();
     // Check for existing calibration data
     if (!touchscreen.loadCalibration()) {
         Serial.println("Failed to load calibration data from SPIFFS.");
+        calibrateTouchscreen();
     }
 }
 
@@ -103,19 +111,15 @@ void initSPIFFS(){
 }
 
 void calibrateTouchscreen(){
-    Serial.println("Re-running calibration as requested...");
+    Serial.println("Calibration go! Get ready to touch the screen.");
     delay(2000); //wait for user to see serial
     touchscreen.calibrate();
     touchscreen.saveCalibration();
 }
 
 void enableTouchscreen(){
-    // Initialize SPIFFS for calibration data
-    initSPIFFS();
-
-    // Initialize the touchscreen
-    touchscreen.begin();
-
+    initSPIFFS(); // Initialize SPIFFS for calibration data
+    touchscreen.begin(); // Initialize the touchscreen
     // Check for existing calibration data
     if ((!touchscreen.loadCalibration()) || (RERUN_CALIBRATE)) {
         Serial.println("Re-calibrating. Either RERUN_CALIBRATE is set or no calibration data found.");
@@ -129,12 +133,12 @@ void turnOnBacklight(){
 }
 
 void configureLVGL(){    
-    //LVGL - graphics library that interfaces with TFT_eSPI
+    //LVGL - high level graphics library that interfaces with TFT_eSPI driver
     Serial.println("LVGL initializing.");
     lv_init();
 
-     //LVGL configuration
-    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LV_HOR_RES_MAX * 10);
+     //LVGL display configuration
+    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LV_HOR_RES_MAX * 10); // Initialize the display buffer
     lv_disp_drv_init(&disp_drv); // Basic initialization
     disp_drv.draw_buf = &draw_buf; // Assign the initialized buffer
     disp_drv.flush_cb = cyd_disp_flush; // Set your display's flush callback
@@ -143,8 +147,8 @@ void configureLVGL(){
     disp_drv.ver_res = 240;  // Set the vertical resolution of your display
     lv_disp_drv_register(&disp_drv); // Register the driver
 
-
-    static lv_indev_drv_t indev_drv; //Descriptor of a touchpad/input device driver
+    // Initialize the touchpad driver with LVGL
+    static lv_indev_drv_t indev_drv; //STATIC STATIC STATIC Descriptor of a touchpad/input device driver
     lv_indev_drv_init(&indev_drv); //Basic initialization
     indev_drv.type = LV_INDEV_TYPE_POINTER; // The touchpad is of type POINTER
     indev_drv.read_cb = cyd_touchpad_read; // Set your driver function
@@ -153,7 +157,6 @@ void configureLVGL(){
 }
 
 void SDCardInit(){
-    //SD Card
     if(!SD.begin(SD_CS)) {
         Serial.println("Card Mount Failed");
         return;
@@ -211,7 +214,6 @@ String readLineFromSDCardFile(const char* path){
     return thereadline;
 }
 
-
 void pushTextToScreen(String text) {
     if (!atextlabel) {
         atextlabel = lv_label_create(lv_scr_act());
@@ -223,74 +225,29 @@ void pushTextToScreen(String text) {
 }
 
 int readLightLevel() {
-    int value = analogRead(LDR_PIN);
-    Serial.println("Reading light level:" + String(value));
-    return value;
+    int lightLevel = analogRead(LDR_PIN);  // Read value from LIGHT_SENSOR_PIN 
+    Serial.println("Light level: " + String(lightLevel));  // Print light level
+    return lightLevel;  // Return light level 
 }
-
-void setLedColorBasedOnLight(int lightLevel) {
-    int redValue = map(lightLevel, 0, 4095, 0, 255);
-    int greenValue = map(lightLevel, 0, 4095, 255, 0);
-    int blueValue = map(lightLevel, 2048, 4095, 0, 255);
-    Serial.println("Setting LED color to: " + String(redValue) + ", " + String(greenValue) + ", " + String(blueValue));
-
-    ledcWrite(RED_CHANNEL, redValue);
-    ledcWrite(GREEN_CHANNEL, greenValue);
-    ledcWrite(BLUE_CHANNEL, blueValue);
-}
-
-lv_obj_t* createCircle(int x, int y) {
-    static lv_style_t style;
-    lv_style_init(&style);
-    lv_style_set_bg_opa(&style, LV_OPA_COVER);
-    lv_style_set_bg_color(&style, lv_color_hex(0x900090)); // purple background
-    lv_style_set_border_color(&style, lv_color_hex(0x00008B)); // Dark blue border
-    lv_style_set_border_width(&style, 4);
-    lv_style_set_radius(&style, LV_RADIUS_CIRCLE);
-
-    lv_obj_t * circle = lv_obj_create(lv_scr_act());
-    lv_obj_add_style(circle, &style, 0);
-    lv_obj_set_size(circle, 100, 100);
-    //my setup required inverting y to + instead of -, you may need to invert y or x
-    lv_obj_align(circle, LV_ALIGN_CENTER, x - 100, y + 150); // Adjust for the circle's radius
-
-    return circle;
-}
-
-void updateCirclePosition(lv_obj_t* circle, int x, int y) {
-    //i had to tune these numbers for my setup, you may need to invert y or x or add offsets
-    lv_obj_align(circle, LV_ALIGN_CENTER, x - 100, y + 150); // Adjust for the circle's radius
-    Serial.println("Updating circle position to x: " + String(x) + ", y: " + String(y));
-    //lv_obj_invalidate(lv_scr_act()); //no use at all here
-}
-
-
 
 #define MAX_PWM 255 // Maximum PWM value for 8-bit resolution
 void toggleLEDs() {
-    // Toggle RED LED
-    if (ledcRead(RED_CHANNEL) > 0) {
+    if (ledcRead(RED_CHANNEL) > 0) { // toggle the LED
         ledcWrite(RED_CHANNEL, 0); // Turn off the LED
     } else {
         ledcWrite(RED_CHANNEL, MAX_PWM); // Turn on the LED
     }
-
-    // Toggle GREEN LED
     if (ledcRead(GREEN_CHANNEL) > 0) {
         ledcWrite(GREEN_CHANNEL, 0); // Turn off the LED
     } else {
         ledcWrite(GREEN_CHANNEL, MAX_PWM); // Turn on the LED
     }
-
-    // Toggle BLUE LED
     if (ledcRead(BLUE_CHANNEL) > 0) {
         ledcWrite(BLUE_CHANNEL, 0); // Turn off the LED
     } else {
         ledcWrite(BLUE_CHANNEL, MAX_PWM); // Turn on the LED
     }
 }
-
-
 static void button_event_cb(lv_event_t * e) {
     lv_event_code_t code = lv_event_get_code(e);
     if(code == LV_EVENT_CLICKED) {
@@ -299,26 +256,46 @@ static void button_event_cb(lv_event_t * e) {
         toggleLEDs(); // Set the LED color to green (50% brightness
     }
 }
-void create_button(String buttontext) {
+void create_button(String buttontext) { //LED button
     lv_obj_t * btn = lv_btn_create(lv_scr_act()); // Create a button on the active screen
     lv_obj_set_size(btn, 200, 80); // Set the button's size
-    //lv_obj_center(btn); // Center the button on the screen
     lv_obj_set_align(btn, LV_ALIGN_TOP_MID);
-
     lv_obj_t * label = lv_label_create(btn); // Add a label to the button
     lv_label_set_text(label, buttontext.c_str()); // Set the label text
     lv_obj_center(label); // Center the label on the button
-
     lv_obj_add_event_cb(btn, button_event_cb, LV_EVENT_CLICKED, NULL); // Assign the event callback
 }
 
-
-
+void buzzSpeaker() {
+    // Beep 3 times 
+    for(int i = 0; i < BEEP_COUNT; i++) {  // Loop 3 times 
+        ledcWrite(4, DUTY_CYCLE);  // Turn on speaker 
+        delay(BEEP_DURATION);  // Wait 250ms
+        ledcWrite(4, 0);  // Turn off speaker 
+        delay(BEEP_DURATION);  // Wait 250ms 
+    } 
+}
+static void button_event_cb2(lv_event_t * e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if(code == LV_EVENT_CLICKED) {
+        Serial.println("Buzz Button clicked!");
+        buzzSpeaker(); // buzzy buzzy
+    }
+}
+void create_button2(String buttontext) { //Buzzer button
+    lv_obj_t * btn = lv_btn_create(lv_scr_act()); // Create a button on the active screen
+    lv_obj_set_size(btn, 200, 80); // Set the button's size
+    lv_obj_set_align(btn, LV_ALIGN_BOTTOM_MID);
+    lv_obj_t * label = lv_label_create(btn); // Add a label to the button
+    lv_label_set_text(label, buttontext.c_str()); // Set the label text
+    lv_obj_center(label); // Center the label on the button
+    lv_obj_add_event_cb(btn, button_event_cb2, LV_EVENT_CLICKED, NULL); // Assign the event callback
+}
 
 void setup() {
     Serial.begin(115200);
-    while(!Serial); // Wait for serial port to connect
-    delay(2000);
+    while(!Serial); // Wait for serial (might cause issues when powered from battery)
+    delay(1000);
 
     //Backlight
     Serial.println("Turning on backlight...");
@@ -334,10 +311,17 @@ void setup() {
     ledcAttachPin(GREEN_LED_PIN, GREEN_CHANNEL);
     ledcAttachPin(BLUE_LED_PIN, BLUE_CHANNEL);
 
-    //LIGHT SENSOR
-    analogReadResolution(12);
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_2_5);
+    // Speaker
+    pinMode(SPEAKER_PIN, OUTPUT);  // Set SPEAKER_PIN as output 
+    // Configure PWM settings 
+    ledcSetup(4, FREQUENCY, RESOLUTION);  // Setup PWM channel 0 
+    // Attach SPEAKER_PIN to PWM channel 0 
+    ledcAttachPin(SPEAKER_PIN, 4);  
+
+    //LDR light sensor
+    pinMode(LDR_PIN, INPUT);
+    analogReadResolution(LIGHT_SENSOR_RESOLUTION);
+    analogSetPinAttenuation(LDR_PIN, ADC_0db); 
 
     //Touchscreen XPT2046 Bitbang
     Serial.println("Enabling touchscreen...");
@@ -346,9 +330,10 @@ void setup() {
     //TFT_eSPI as display driver
     Serial.println("TFT init and rotation.");
     tft.begin(); /* TFT init */
-    tft.setRotation(1); /* Landscape orientation */
+    tft.setRotation(1); //You may need to adjust this for your display
+    tft.invertDisplay(0); //I had to invert colors: st7789 is 0, ili9341 is 1
+    //Test TFT_eSPI with RED circle so you know it's working
     tft.fillScreen(TFT_BLACK); // Clear the screen to black
-    // Draw a red circle using TFT_eSPI only
     Serial.println("Drawing a red circle using TFT_eSPI only.");
     tft.drawCircle(120, 160, 50, TFT_RED); // Parameters: x, y, radius, color
     delay(2000);
@@ -357,74 +342,48 @@ void setup() {
     Serial.println("Configuring LVGL...");
     configureLVGL();
 
-
-
-
     //SDCard
     Serial.println("SD card initization.");
     SDCardInit();
     // Remove existing file if any
     Serial.println("Removing existing file /hello.txt if any.");
     removeSDCardFile("/hello.txt");
-    // Create a new file
     createNewSDCardFile("/hello.txt");
-    // Write to the file
-    writeToSDCardFile("Hello, from CYD SD!");
-    // Read from the file
-    printthis = readLineFromSDCardFile("/hello.txt");
+    writeToSDCardFile("Hello, fellow CYD user, your SD works!");
+    printthis = readLineFromSDCardFile("/hello.txt"); // Read from the file
     Serial.println("Line read from file: " + printthis);
 
     // Push some text to the screen as a test
     Serial.println("Pushing text to screen.");
-    pushTextToScreen("Hello, CYD user!");
+
+    //if printthis is empty, push a default message
+    if (printthis == "") {
+        pushTextToScreen("Hello, fellow CYD user! SD didn't work :(");
+    } else {
+        pushTextToScreen(printthis);
+    }
 
     // Create a button
     create_button("LED");
-
-    //circle = createCircle(100, 100);
-
+    create_button2("Buzzer");
 }
-
 
 void loop() { 
     static uint32_t prev_ms = millis(); // part of the LVGL timer workaround
 
     Serial.println("Looping..." + String(counter));
     
+    //this wasn't working for me on multiple devices
     int lightLevel = readLightLevel(); //light sensor on pin 34
-    //setLedColorBasedOnLight(lightLevel); //rgb leds on pins 4, 16, 17
 
-    //SD Card - disabled so it doesn't wear out
-    //printthis = "none";
-    //printthis = readLineFromSDCardFile("/hello.txt"); //this reads from SD, high wear for a loop
-    //Serial.println("Line read from file: " + printthis);
-    
-    // Serial.println("Pushing text to screen.");
-    // pushTextToScreen("Hello, CYD user!");
-
-    // Point touchPoint = touchscreen.getTouch(); // returns x and y. (0,0) or (240,0) if no touch
-    // if ((touchPoint.x != 0) && (touchPoint.y != 0) && (touchPoint.x != 240)) { //signs the touch is pressed
-    //     Serial.println("touchscreen location: " + String(touchPoint.x) + ", " + String(touchPoint.y));
-    //     //draw a circle on the screen, i inverted y to + instead of -
-    //     //updateCirclePosition(circle, touchPoint.x, -touchPoint.y);
-    // }
-    // Point touchPoint = touchscreen.getTouch(); // Poll the touch controller
-    // int16_t tmp_x = touchPoint.x;
-    // int16_t tmp_y = touchPoint.y;
-    // touchPoint.x = 320 - tmp_y;  // Replace 320 with your display width
-    // touchPoint.y = tmp_x;   
-    // Serial.println("Touchscreen location: " + String(touchPoint.x) + ", " + String(touchPoint.y));
-
-
+    //LVGL needs to be updated in the loop
     lv_task_handler(); // Throw LGVL a bone (this line and comment was written by copilot, I swear)
     lv_timer_handler(); // Throw LGVL another bone (again, this line and comment was written by copilot, I swear)
-
-    //Serial.print("Available heap memory: " + String(esp_get_free_heap_size()) + " bytes");
 
     delay(50);
     counter += 1;
 
-    //Thanks for this fix by https://github.com/AllanOricil/esp32-lvgl-lcd-touch-sd-card 
+    //Thanks to https://github.com/AllanOricil/esp32-lvgl-lcd-touch-sd-card 
     //this is a workaround to force LVGL to understand time
     uint32_t elapsed_ms = millis() - prev_ms;
     if(elapsed_ms >= LVGL_TICK_PERIOD_MS) {
